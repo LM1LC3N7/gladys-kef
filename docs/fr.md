@@ -1,67 +1,134 @@
-# Template de démonstration
+# Enceintes sans fil KEF pour Gladys
 
-Ceci est la documentation utilisateur de l'intégration. Gladys ré-héberge ce
-fichier et affiche un lien **Documentation** permanent vers lui dans l'écran
-de configuration (dans la langue de l'utilisateur, avec l'anglais en repli) —
-c'est au moment de configurer que l'utilisateur en a le plus besoin. Gardez
-les courtes indications d'accueil dans les blocs `section` du `config_schema`
-du manifest ; mettez ici le pas-à-pas détaillé (captures d'écran, dépannage…).
+Pilotez vos enceintes sans fil **KEF** (LS50 Wireless II, LSX II, LSX II LT,
+LS60) depuis Gladys, en local, sans aucun cloud : allumage, veille, volume,
+sourdine, source, lecture, pause, suivant, précédent et titre en cours.
+
+> **Important.** Cette intégration n'a jamais été testée avec une vraie
+> enceinte : elle a été écrite à partir de la bibliothèque `pykefcontrol`,
+> et l'API KEF qu'elle utilise n'est pas documentée par KEF. Elle a été
+> testée avec une fausse enceinte seulement. Vos retours sont les bienvenus.
+> Intégration non officielle, sans lien avec KEF. La barre de son XIO n'est
+> pas confirmée (pykefcontrol ne la cite pas).
+
+## Mise en place
+
+1. Donnez à chaque enceinte une **adresse IP fixe** dans votre box (bail DHCP
+   réservé).
+2. Dans Gladys, installez l'intégration **KEF Wireless Speakers**, puis ouvrez
+   sa configuration.
+3. Saisissez les adresses IP, séparées par des virgules (par exemple
+   `192.168.1.50, 192.168.1.51`).
+4. Choisissez le **plafond de volume** (40 % par défaut) et l'**intervalle de
+   lecture** (10 s par défaut, de 5 à 300 s).
+5. Les enceintes apparaissent dans l'onglet **Découverte** : créez-les.
+
+L'intégration lit chaque enceinte par son API HTTP (`http://<ip>/api/…`,
+port 80) à l'intervalle choisi. Un changement fait sur l'enceinte, sa
+télécommande ou l'application KEF Connect apparaît dans Gladys à la lecture
+suivante.
 
 ## Ce que vous obtenez
 
-Six appareils de démonstration apparaissent après l'installation : une
-station météo (vraies données Open-Meteo), un interrupteur, une lampe
-variable, une prise connectée avec mesure de puissance, un détecteur de
-mouvement et une caméra.
+| Fonction           | Type Gladys                    | Remarque                                                   |
+| ------------------ | ------------------------------ | ---------------------------------------------------------- |
+| Marche             | état binaire (lecture seule)   | 1 allumée, 0 en veille ou sans réponse                     |
+| Allumer            | bouton                         | réveille l'enceinte                                        |
+| Veille             | bouton                         | met l'enceinte en veille ; n'attend jamais, jamais bloquée |
+| Volume             | musique / volume (0 à 100)     | plafonné                                                   |
+| Sourdine           | bouton (télévision / sourdine) | coupe le son (volume 0), ou le remet au plus au plafond    |
+| Lecture, pause     | boutons musique                | par la bascule lecture/pause, seulement quand il le faut   |
+| Suivant, précédent | boutons musique                | refusés en veille                                          |
+| Lecture en cours   | état musique (lecture seule)   | 1 en lecture, 0 sinon                                      |
+| Source             | liste déroulante               | Wi-Fi, Bluetooth, TV, optique, coaxiale, analogique        |
+| Titre en cours     | texte (lecture seule)          | « Artiste - Titre » ; « — » sans lecture ou en veille      |
 
-## Configuration
+Volontairement, pas d'**interrupteur** : un « tout éteindre » ou « tout
+allumer » d'un assistant vocal ou d'une scène ne réveille ni ne coupe vos
+enceintes.
 
-1. Ouvrez l'onglet **Configuration** de l'intégration.
-2. Renseignez la **latitude** et la **longitude** que la station météo de
-   démonstration doit observer (Paris par défaut), et choisissez votre unité
-   de température. L'**intervalle de rafraîchissement** règle la fréquence
-   de lecture de la station météo et de la puissance de la prise : toutes
-   les 5 minutes par défaut, toutes les minutes au plus.
-3. Enregistrez : les appareils apparaissent dans l'onglet **Découverte**,
-   prêts à être ajoutés.
+## Plafond de volume
 
-Le réglage **Préférer la connexion locale** pilote la prise de
-démonstration : elle affiche en badge le canal réellement utilisé (local ou
-cloud), avec un point orange quand elle fonctionne en mode dégradé (local
-refusé, bascule cloud).
+Le volume demandé depuis Gladys (tableau de bord, scène, assistant vocal) ne
+dépasse jamais le plafond de la configuration : un volume plus fort est
+ramené au plafond. Le plafond est relu juste avant l'envoi : une nouvelle
+valeur enregistrée s'applique tout de suite. Le volume réglé sur l'enceinte
+elle-même (télécommande, application) n'est pas modifié, sauf quand Gladys
+le rendrait audible :
 
-## Actions
+- **Allumer**, ou une **source** choisie quand l'enceinte est en veille (cela
+  la réveille) : le volume est relu après le réveil et ramené au plafond
+  s'il le dépasse ; la vérification est refaite toutes les 2,5 s pendant
+  environ 15 s, et un volume monté au-dessus du plafond pendant ces 15 s est
+  baissé aussi.
+- **Une baisse ignorée** : un volume envoyé et non relu (l'enceinte l'a
+  accepté puis ignoré) est « envoyé, sans confirmation », et les mêmes
+  vérifications suivent pendant environ 15 s.
+- **Fin de sourdine** : la sourdine de cette intégration est un volume mis
+  à 0 (comme pykefcontrol) ; la retirer remet le volume d'avant, au plus le
+  plafond. Une enceinte mise en sourdine par sa propre télécommande ou son
+  application est laissée telle quelle (commande refusée) : retirez la
+  sourdine depuis celles-ci.
 
-- **Tester le fournisseur météo** — effectue une requête en direct vers
-  Open-Meteo et affiche la température et l'humidité actuelles sous le
-  bouton.
-- **Identifier un appareil** — choisissez un de vos appareils dans la liste
-  et il se signale (la lampe de démonstration « clignote » dans les logs).
+## Commandes
 
-## Scènes
+Chaque commande reçoit sa réponse en moins de 4 secondes (Gladys attend
+5 secondes).
 
-L'intégration ajoute ses propres cartes à l'éditeur de scènes (Gladys 5.1
-ou plus récent), dans la catégorie **Intégrations** :
+- Avant chaque commande, l'adresse MAC de l'enceinte à l'adresse est relue :
+  quand une autre enceinte y répond (adresse changée), rien n'est envoyé et
+  l'adresse est oubliée (saisissez la nouvelle dans la configuration). Une
+  réponse illisible refuse la commande, rien n'est envoyé, l'adresse est
+  gardée.
+- Une commande n'est confirmée que lorsque l'enceinte rend la valeur
+  demandée (marche, volume, source, état de lecture) ; sinon elle est
+  annoncée « envoyée, sans confirmation ». Une commande qui n'a pas pu
+  partir est annoncée « rien n'a été envoyé », et une commande encore en
+  attente à la fin de ses 4 secondes est abandonnée, jamais envoyée en
+  retard.
+- **Veille** et **Pause** n'attendent jamais derrière une autre commande.
+  Veille annule les commandes encore en attente qui pourraient réveiller
+  l'enceinte (allumer, source, lecture, suivant, précédent) ; Pause annule
+  lecture, suivant et précédent (« annulée par Veille / Pause, rien n'a été
+  envoyé »). Une Veille non confirmée (par exemple pendant le réveil après un
+  Allumer) est réaffirmée pendant environ 20 s dès que l'enceinte se lit
+  « allumée » ; un Allumer depuis Gladys y met fin.
+- Lecture n'agit qu'en pause, Pause qu'en lecture (l'API KEF n'a qu'une
+  bascule) : dans un autre état (mise en mémoire tampon...), la commande est
+  refusée et rien n'est envoyé.
 
-- **Mouvement détecté** (déclencheur) — lance la scène quand un détecteur
-  de démonstration voit bouger quelque chose. Choisissez éventuellement le
-  détecteur et ce qui a bougé (personne, animal) ; laissés vides, toute
-  détection correspond. Les actions suivantes peuvent lire ce qui a bougé
-  avec `{{triggerEvent.data.target}}`.
-- **Identifier un appareil** (action) — fait se signaler l'appareil choisi.
-  Elle indique si l'appareil a pu se signaler, pour que les actions
-  suivantes puissent en dépendre.
+## Lectures
 
-## Tableau de bord
+- Une enceinte est lue à chaque intervalle, jamais plus tôt : ni les
+  boutons, ni une recherche de Découverte, ni une reconnexion à Gladys, ni
+  une configuration enregistrée à nouveau, ni un redémarrage de
+  l'intégration (l'heure de la dernière lecture est gardée dans `/data`) ne
+  la font relire plus tôt.
+- Une enceinte qui ne répond pas deux fois de suite est affichée éteinte et
+  citée dans le statut de l'intégration ; elle est alors lue à intervalles
+  espacés (doublés jusqu'à 5 minutes).
 
-Ajoutez le widget **État de la démo** à un tableau de bord : il affiche en
-direct la température de la station météo et la puissance de la prise du
-bureau, la connexion utilisée par la prise (en orange si dégradée) et la
-position observée. Son bouton **Identifier la lampe** fait se signaler la
-lampe de démonstration.
+## Boutons de la configuration
 
-## Dépannage
+- **Chercher les enceintes** : lit les adresses dont la lecture est due, puis
+  publie la liste de Découverte.
+- **Vérifier les enceintes** : la dernière lecture de chaque enceinte
+  (marche, volume, source, il y a combien de temps) et le plafond en vigueur.
+  Ce bouton ne lit rien.
 
-L'intégration journalise tout ce qu'elle fait : consultez les logs de
-l'intégration depuis l'interface Gladys (ou `docker logs` sur l'hôte) avec
-`LOG_LEVEL=debug` pour le détail complet.
+## Données et vie privée
+
+L'intégration ne demande ni compte ni mot de passe : l'API KEF n'en a pas.
+Elle garde dans `/data/kef.json` les enceintes connues (adresse MAC,
+adresse, nom, modèle, volume remplacé par une sourdine) et l'heure de la
+dernière lecture de chaque adresse. Rien ne quitte votre réseau local.
+
+## Limites connues
+
+- L'API KEF n'est pas documentée : ses réponses peuvent différer sur une
+  vraie enceinte ou après une mise à jour du micrologiciel.
+- Pas encore de recherche automatique sur le réseau : saisissez les adresses.
+- Pas d'égaliseur, de préréglages, de listes de lecture, de répétition ni de
+  lecture aléatoire.
+- Jamais testé avec un vrai appareil : aucune vraie enceinte KEF n'a été
+  essayée.

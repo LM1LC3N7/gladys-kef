@@ -1,8 +1,8 @@
 {
-  "name": "gladys-integration-template-js",
-  "version": "1.0.0",
+  "name": "gladys-kef",
+  "version": "0.1.0",
   "private": true,
-  "description": "Official starter template to build an external integration for Gladys Assistant with the JavaScript SDK.",
+  "description": "Gladys Assistant external integration for KEF wireless speakers (LS50 Wireless II, LSX II, LS60): power, volume, mute, source, playback and title, over their local HTTP API. Unofficial, not affiliated with KEF.",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -10,7 +10,10 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "node --test"
+    "test": "node --test",
+    "audit": "npm audit --omit=dev",
+    "cover": "node scripts/cover.mjs",
+    "validate:manifest": "npx --yes github:GladysAssistant/integration-store ."
   },
   "engines": {
     "node": ">=22"

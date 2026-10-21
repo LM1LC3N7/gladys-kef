@@ -1,177 +1,89 @@
 {
   "manifest_version": 1,
   "type": "device",
-  "name": "Demo Devices Template",
+  "name": "KEF Wireless Speakers",
   "description": {
-    "en": "Starter template showing sensors, a switch, a dimmable light and a smart plug.",
-    "fr": "Template de démarrage : capteurs, interrupteur, lampe variable et prise connectée."
+    "en": "KEF wireless speakers (LS50 Wireless II, LSX II, LS60), local: power, volume, source, playback.",
+    "fr": "Enceintes sans fil KEF (LS50 Wireless II, LSX II, LS60) en local : marche, volume, source."
   },
-  "version": "1.0.0",
-  "docker_image": "ghcr.io/gladysassistant/integration-template-js:1.0.0",
+  "version": "0.1.0",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-kef:0.1.0",
   "gladys_version": ">=5.1.0",
-  "cover_image": "https://raw.githubusercontent.com/GladysAssistant/integration-template-js/master/cover.png",
-  "categories": ["lighting", "security", "environment"],
-  "transports": ["local", "cloud"],
+  "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-kef/main/cover.png",
+  "categories": ["multimedia"],
+  "transports": ["local"],
   "config_schema": [
     {
       "key": "intro",
       "type": "section",
-      "label": { "en": "Getting started", "fr": "Pour commencer" },
+      "label": {
+        "en": "Your KEF speakers, on your local network",
+        "fr": "Vos enceintes KEF, sur votre réseau local"
+      },
       "description": {
-        "en": "The demo weather station reads real data from the free Open-Meteo API: pick the coordinates to observe. No account, no API key.",
-        "fr": "La station météo de démonstration lit de vraies données via l'API gratuite Open-Meteo : choisissez les coordonnées à observer. Pas de compte, pas de clé d'API."
+        "en": "Power on, standby, volume, mute, source, play, pause, next, previous and the title playing of each KEF wireless speaker (LS50 Wireless II, LSX II, LSX II LT, LS60; XIO not confirmed), through its local HTTP API, without any cloud. Give each speaker a fixed IP address in your router and type it below: the speakers then appear in the Discovery tab. The volume set from Gladys never goes above the cap below, also when a speaker wakes up or is unmuted. The KEF API is not documented: never tested with a real speaker. Unofficial integration, not affiliated with KEF.",
+        "fr": "Allumage, veille, volume, sourdine, source, lecture, pause, suivant, précédent et titre en cours de chaque enceinte sans fil KEF (LS50 Wireless II, LSX II, LSX II LT, LS60 ; XIO non confirmée), par son API HTTP locale, sans aucun cloud. Donnez à chaque enceinte une adresse IP fixe dans votre box et saisissez-la ci-dessous : les enceintes apparaissent alors dans l'onglet Découverte. Le volume réglé depuis Gladys ne dépasse jamais le plafond ci-dessous, y compris au réveil d'une enceinte ou à la fin d'une sourdine. L'API KEF n'est pas documentée : jamais testé avec une vraie enceinte. Intégration non officielle, sans lien avec KEF."
       },
       "links": [
         {
-          "url": "https://open-meteo.com/en/docs",
-          "label": { "en": "Open-Meteo documentation", "fr": "Documentation Open-Meteo" }
+          "url": "https://github.com/LM1LC3N7/gladys-kef/blob/main/docs/fr.md",
+          "label": { "en": "Guide (French)", "fr": "Guide (français)" }
+        },
+        {
+          "url": "https://github.com/LM1LC3N7/gladys-kef/blob/main/docs/en.md",
+          "label": { "en": "Guide (English)", "fr": "Guide (anglais)" }
         }
       ]
     },
     {
-      "key": "latitude",
-      "type": "number",
-      "label": { "en": "Latitude", "fr": "Latitude" },
+      "key": "addresses",
+      "type": "string",
+      "label": { "en": "IP addresses of the speakers", "fr": "Adresses IP des enceintes" },
       "description": {
-        "en": "Latitude used for the demo weather sensor.",
-        "fr": "Latitude utilisée par le capteur météo de démonstration."
+        "en": "Separated by commas, for example 192.168.1.50, 192.168.1.51.",
+        "fr": "Séparées par des virgules, par exemple 192.168.1.50, 192.168.1.51."
       },
-      "placeholder": { "en": "e.g. 48.8566", "fr": "ex. 48.8566" },
-      "required": true,
-      "default": 48.8566,
-      "min": -90,
-      "max": 90
-    },
-    {
-      "key": "longitude",
-      "type": "number",
-      "label": { "en": "Longitude", "fr": "Longitude" },
-      "description": {
-        "en": "Longitude used for the demo weather sensor.",
-        "fr": "Longitude utilisée par le capteur météo de démonstration."
-      },
-      "placeholder": { "en": "e.g. 2.3522", "fr": "ex. 2.3522" },
-      "required": true,
-      "default": 2.3522,
-      "min": -180,
-      "max": 180
-    },
-    {
-      "key": "unit",
-      "type": "select",
-      "label": { "en": "Temperature unit", "fr": "Unité de température" },
+      "placeholder": { "en": "192.168.1.50", "fr": "192.168.1.50" },
       "required": false,
-      "default": "celsius",
-      "options": [
-        { "value": "celsius", "label": { "en": "Celsius", "fr": "Celsius" } },
-        { "value": "fahrenheit", "label": { "en": "Fahrenheit", "fr": "Fahrenheit" } }
-      ]
+      "default": ""
     },
     {
-      "key": "poll_frequency",
+      "key": "max_volume",
       "type": "number",
-      "label": { "en": "Refresh interval (s)", "fr": "Intervalle de rafraîchissement (s)" },
+      "label": { "en": "Volume cap (%)", "fr": "Plafond de volume (%)" },
       "description": {
-        "en": "How often sensors are polled, in seconds (one minute minimum).",
-        "fr": "Fréquence d'interrogation des capteurs, en secondes (une minute minimum)."
+        "en": "The highest volume Gladys may set, from 1 to 100 % (100: no cap). A higher volume asked by a scene, a voice assistant or the dashboard is set to this cap; a speaker woken up or unmuted by Gladys is brought back under it. The volume set on the speaker itself (remote, app) is not changed.",
+        "fr": "Le volume le plus fort que Gladys peut régler, de 1 à 100 % (100 : pas de plafond). Un volume plus fort demandé par une scène, un assistant vocal ou le tableau de bord est ramené à ce plafond ; une enceinte réveillée ou sortie de sourdine par Gladys est ramenée sous ce plafond. Le volume réglé sur l'enceinte elle-même (télécommande, application) n'est pas modifié."
       },
       "required": false,
-      "default": 300,
-      "min": 60,
-      "max": 3600
+      "default": 40,
+      "min": 1,
+      "max": 100
+    },
+    {
+      "key": "poll_interval",
+      "type": "number",
+      "label": { "en": "Refresh interval (s)", "fr": "Intervalle de lecture (s)" },
+      "description": {
+        "en": "How often each speaker is read, from 5 to 300 seconds. A speaker is never read sooner, whatever the buttons or a restart.",
+        "fr": "Fréquence de lecture de chaque enceinte, de 5 à 300 secondes. Une enceinte n'est jamais relue plus tôt, quels que soient les boutons ou un redémarrage."
+      },
+      "required": false,
+      "default": 10,
+      "min": 5,
+      "max": 300
     }
   ],
   "actions": [
     {
-      "key": "test_weather",
-      "label": { "en": "Test the weather provider", "fr": "Tester le fournisseur météo" },
+      "key": "find_devices",
+      "label": { "en": "Find the speakers", "fr": "Chercher les enceintes" },
       "timeout_seconds": 30
     },
     {
-      "key": "identify",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ]
-    }
-  ],
-  "scene_triggers": [
-    {
-      "key": "motion_detected",
-      "label": { "en": "Motion detected", "fr": "Mouvement détecté" },
-      "description": {
-        "en": "A demo motion sensor saw a person or an animal move.",
-        "fr": "Un détecteur de démonstration a vu bouger une personne ou un animal."
-      },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Sensor", "fr": "Détecteur" }
-        },
-        {
-          "key": "target",
-          "type": "multi_select",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" },
-          "options": [
-            { "value": "person", "label": { "en": "Person", "fr": "Personne" } },
-            { "value": "animal", "label": { "en": "Animal", "fr": "Animal" } }
-          ]
-        }
-      ],
-      "variables": [
-        {
-          "key": "target",
-          "type": "string",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" }
-        }
-      ]
-    }
-  ],
-  "scene_actions": [
-    {
-      "key": "identify_device",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "description": {
-        "en": "Make a device signal itself (the demo light blinks).",
-        "fr": "Fait se signaler un appareil (la lampe de démonstration clignote)."
-      },
-      "timeout_seconds": 15,
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ],
-      "outputs": [
-        {
-          "key": "signalled",
-          "type": "boolean",
-          "label": { "en": "Device signalled", "fr": "Appareil signalé" }
-        }
-      ]
-    }
-  ],
-  "widgets": [
-    {
-      "key": "demo_status",
-      "label": { "en": "Demo status", "fr": "État de la démo" },
-      "description": {
-        "en": "Live temperature and plug power, plug connection and observed location.",
-        "fr": "Température et puissance en direct, connexion de la prise, position observée."
-      },
-      "icon": "activity",
-      "action_timeout_seconds": 15
+      "key": "check_devices",
+      "label": { "en": "Check the speakers", "fr": "Vérifier les enceintes" },
+      "timeout_seconds": 15
     }
   ]
 }

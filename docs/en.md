@@ -1,61 +1,121 @@
-# Demo Devices Template
+# KEF wireless speakers for Gladys
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+Control your **KEF** wireless speakers (LS50 Wireless II, LSX II, LSX II LT,
+LS60) from Gladys, locally, without any cloud: power on, standby, volume,
+mute, source, play, pause, next, previous and the title playing.
+
+> **Important.** This integration has never been tested with a real speaker:
+> it was written from the `pykefcontrol` library, and the KEF API it uses is
+> not documented by KEF. It was tested against a fake speaker only. Your
+> feedback is welcome. Unofficial integration, not affiliated with KEF.
+> The XIO soundbar is not confirmed (pykefcontrol does not list it).
+
+## Setup
+
+1. Give each speaker a **fixed IP address** in your router (reserved DHCP
+   lease).
+2. In Gladys, install the **KEF Wireless Speakers** integration, then open its
+   configuration.
+3. Type the IP addresses, separated by commas (for example
+   `192.168.1.50, 192.168.1.51`).
+4. Choose the **volume cap** (40 % by default) and the **refresh interval**
+   (10 s by default, 5 to 300 s).
+5. The speakers appear in the **Discovery** tab: create them.
+
+The integration reads each speaker over its HTTP API (`http://<ip>/api/…`,
+port 80) at the refresh interval. A change made on the speaker, its remote or
+the KEF Connect app shows in Gladys at the next read.
 
 ## What you get
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+| Feature        | Gladys type                | Note                                                    |
+| -------------- | -------------------------- | ------------------------------------------------------- |
+| Power          | binary state (read only)   | 1 on, 0 in standby or not answering                     |
+| Power on       | button                     | wakes the speaker up                                    |
+| Standby        | button                     | puts the speaker in standby; never waits, never blocked |
+| Volume         | music / volume (0 to 100)  | capped                                                  |
+| Mute           | button (television / mute) | mutes (volume 0), or unmutes at most at the cap         |
+| Play, pause    | music buttons              | through the play/pause toggle, only when it is needed   |
+| Next, previous | music buttons              | refused in standby                                      |
+| Playback       | music state (read only)    | 1 playing, 0 otherwise                                  |
+| Source         | dropdown                   | Wi-Fi, Bluetooth, TV, optical, coaxial, analog          |
+| Now playing    | text (read only)           | "Artist - Title"; "—" when nothing plays or in standby  |
 
-## Configuration
+On purpose, no **switch**: an "everything off" or "everything on" from a
+voice assistant or a scene neither wakes nor cuts your speakers.
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+## Volume cap
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+The volume asked from Gladys (dashboard, scene, voice assistant) never goes
+above the cap of the configuration: a higher volume is set to the cap. The
+cap is read again just before sending: a new value saved applies at once. The
+volume set on the speaker itself (remote, app) is not changed, except when
+Gladys would make it heard:
 
-## Actions
+- **Power on**, or a **source** chosen while the speaker is in standby (it
+  wakes it up): the volume is read after the wake-up and lowered to the cap
+  when above it; the check is made again every 2.5 s for about 15 s, and a
+  volume turned up above the cap during those 15 s is lowered too.
+- **A lowering ignored**: a volume sent and not read back (the speaker
+  accepted it and ignored it) is "sent, without confirmation", and the same
+  checks follow for about 15 s.
+- **Unmute**: the mute of this integration is a volume set to 0 (as
+  pykefcontrol does); unmuting sets back the previous volume, at most the
+  cap. A speaker muted by its own remote or app is left alone (the command is
+  refused): unmute it there.
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+## Commands
 
-## Scenes
+Every command is answered within 4 seconds (Gladys waits 5 seconds).
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+- Before each command, the MAC address of the speaker at the address is read
+  again: when another speaker answers there (address changed), nothing is
+  sent and the address is forgotten (type the new one in the configuration).
+  An unreadable answer refuses the command, nothing sent, the address kept.
+- A command is confirmed only when the speaker gives back the value asked
+  (power, volume, source, play state); otherwise it is reported "sent,
+  without confirmation". A command that could not leave is reported "nothing
+  sent", and a command still waiting at the end of its 4 seconds is dropped,
+  never sent late.
+- **Standby** and **Pause** never wait behind another command. Standby
+  cancels the commands still waiting that could wake the speaker (power on,
+  source, play, next, previous); Pause cancels play, next and previous
+  ("cancelled by Standby / Pause, nothing sent"). A Standby not confirmed (for
+  example while the speaker is still waking up from a Power on) is asserted
+  again for about 20 s whenever the speaker reads "on"; a Power on from
+  Gladys ends it.
+- Play acts only when paused, Pause only when playing (the KEF API has a
+  toggle only): in another state (buffering...), the command is refused and
+  nothing is sent.
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+## Reads
 
-## Dashboard
+- A speaker is read every refresh interval, never sooner: neither the
+  buttons, nor a Discovery scan, nor a reconnection to Gladys, nor a
+  configuration saved again, nor a restart of the integration (the time of
+  the last read is kept in `/data`) make it read sooner.
+- A speaker that does not answer twice in a row shows as off and is named in
+  the integration status; it is then read at spaced intervals (doubled up to
+  5 minutes).
 
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
+## Configuration buttons
 
-## Troubleshooting
+- **Find the speakers**: reads the addresses whose read is due, then
+  publishes the Discovery list.
+- **Check the speakers**: the last read of each speaker (power, volume,
+  source, how long ago) and the cap in force. It reads nothing.
 
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+## Data and privacy
+
+The integration asks for no account and no password: the KEF API has none.
+It keeps in `/data/kef.json` the known speakers (MAC address, address, name,
+model, the volume replaced by a mute) and the time of the last read of each
+address. Nothing leaves your local network.
+
+## Known limits
+
+- The KEF API is not documented: its answers may differ on a real speaker or
+  after a firmware update.
+- No automatic search on the network yet: type the addresses.
+- No equalizer, presets, playlists, repeat or shuffle.
+- Never tested with a real device: no real KEF speaker was tried.
