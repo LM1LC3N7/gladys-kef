@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-21
+
 ### Added
 
 - KEF wireless speakers (LS50 Wireless II, LSX II, LSX II LT, LS60) over their
@@ -75,4 +77,5 @@ the notes of the version's GitHub Release.
   used are removed from /data; the name and model of a speaker without a name
   are read again at most every 10 minutes.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-kef/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-kef/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-kef/releases/tag/v0.1.1
