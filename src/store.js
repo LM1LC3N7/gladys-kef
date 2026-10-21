@@ -43,6 +43,7 @@ function sanitize(data) {
             : 80,
         name: cleanText(device.name, LIMITS.name),
         model: /^[A-Z0-9]{2,20}$/.test(device.model ?? '') ? device.model : undefined,
+        writeMethod: ['POST', 'GET'].includes(device.writeMethod) ? device.writeMethod : undefined,
         mutedVolume:
           Number.isInteger(device.mutedVolume) &&
           device.mutedVolume >= 1 &&

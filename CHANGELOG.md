@@ -43,5 +43,31 @@ the notes of the version's GitHub Release.
   only the expected fields of the expected types kept; no redirect followed.
 - At most 250 states a minute are published, simultaneous publications
   included.
+- Standby and a wake-up are decided by the order of the requests: a Standby
+  guard is ended only by a Power on asked after it, and never puts back in
+  standby a speaker woken by a newer Power on. A Standby maybe sent (server
+  error, no answer) is asserted again by the guard.
+- One play/pause toggle at a time per speaker: two Pause presses, or a Pause
+  right after a Play, always end paused; Pause waits for a settled play
+  state instead of refusing while buffering.
+- A Mute cancels the older volume commands still waiting.
+- A source chosen while in standby lowers the volume to the cap before the
+  command is answered, as Power on does.
+- The cap checks after a wake-up never hold the command queue longer than
+  1.2 s at a time.
+- Standby is sent even when the model could not be read (POST, then GET).
+- A write refused by the speaker (HTTP 4xx) is reported "refused", not
+  "sent, without confirmation".
+
+### Fixed
+
+- A read begun before a command no longer republishes the older value.
+- The same speaker typed at two addresses is read at one of them only, and
+  named in the status.
+- A speaker that lost its address to a new one keeps no stale state, even
+  with a full table.
+- A command arrived while /data was loading waits for it; addresses no longer
+  used are removed from /data; the name and model of a speaker without a name
+  are read again at most every 10 minutes.
 
 [Unreleased]: https://github.com/LM1LC3N7/gladys-kef/commits/main

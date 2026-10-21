@@ -94,9 +94,10 @@ export class KefClient {
    * One write. `model` decides POST or GET, as pykefcontrol does; the answer
    * body is not used (it carries no state: a write is confirmed by a read).
    */
-  async set(path, value, { model, roles = 'value', timeout, signal } = {}) {
+  async set(path, value, { model, method, roles = 'value', timeout, signal } = {}) {
     const payload = { path, roles, value };
-    if (POST_MODELS.includes(model)) {
+    // `method` forces POST or GET (a model not read yet); otherwise the model decides.
+    if (method === 'POST' || (method === undefined && POST_MODELS.includes(model))) {
       await this.request({
         host: this.host,
         port: this.port,

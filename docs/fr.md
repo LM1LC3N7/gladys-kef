@@ -94,8 +94,14 @@ Chaque commande reçoit sa réponse en moins de 4 secondes (Gladys attend
   Allumer) est réaffirmée pendant environ 20 s dès que l'enceinte se lit
   « allumée » ; un Allumer depuis Gladys y met fin.
 - Lecture n'agit qu'en pause, Pause qu'en lecture (l'API KEF n'a qu'une
-  bascule) : dans un autre état (mise en mémoire tampon...), la commande est
-  refusée et rien n'est envoyé.
+  bascule), une seule bascule à la fois par enceinte : deux appuis sur
+  Pause, ou une Pause juste après une Lecture, finissent en pause. Pause
+  attend, dans ses 4 secondes, un état stable (fin de mise en mémoire
+  tampon) ; Lecture dans un autre état est refusée, rien n'est envoyé.
+- L'ordre des demandes décide : un Allumer demandé après une Veille
+  l'emporte (la Veille n'est plus réaffirmée), une Veille demandée après un
+  Allumer l'emporte. Une Sourdine annule les volumes demandés avant elle et
+  encore en attente.
 
 ## Lectures
 

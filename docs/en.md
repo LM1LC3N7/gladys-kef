@@ -85,8 +85,13 @@ Every command is answered within 4 seconds (Gladys waits 5 seconds).
   again for about 20 s whenever the speaker reads "on"; a Power on from
   Gladys ends it.
 - Play acts only when paused, Pause only when playing (the KEF API has a
-  toggle only): in another state (buffering...), the command is refused and
-  nothing is sent.
+  toggle only), one toggle at a time per speaker: two Pause presses, or a
+  Pause right after a Play, end paused. Pause waits, within its 4 seconds,
+  for a settled state (buffering ends); Play in another state is refused,
+  nothing sent.
+- The order of the requests decides: a Power on asked after a Standby wins
+  (the Standby is no longer asserted again), a Standby asked after a Power on
+  wins. A Mute cancels the volumes asked before it and still waiting.
 
 ## Reads
 

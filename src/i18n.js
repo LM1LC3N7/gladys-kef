@@ -73,6 +73,11 @@ export const T = {
       `No KEF speaker answers yet at: ${list(addresses)}.`,
       `Aucune enceinte KEF ne répond encore à : ${list(addresses)}.`,
     ),
+  duplicates: (pairs) =>
+    both(
+      `Same speaker typed twice, read at one address only (duplicate = address read): ${list(pairs)}.`,
+      `Même enceinte saisie deux fois, lue à une seule adresse (doublon = adresse lue) : ${list(pairs)}.`,
+    ),
   invalidEntries: (entries) =>
     both(
       `Ignored in the configuration (invalid): ${list(entries)}.`,

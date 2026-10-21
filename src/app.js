@@ -52,9 +52,6 @@ const WAKES = new Set([
 /** Commands that make a speaker play: a Pause asked after them wins. */
 const PLAYS = new Set([FEATURES.PLAY, FEATURES.NEXT, FEATURES.PREVIOUS]);
 
-/** Commands that never wait in the queue. */
-const PROTECTIVE = new Set([FEATURES.STANDBY, FEATURES.PAUSE]);
-
 /**
  * The volume of a command, validated strictly: an integer 0..100 given as a
  * number or as a string of digits. null, '', true, 12.5, '12abc' are refused.
@@ -125,6 +122,20 @@ export class KefApp {
     /** device id -> number of Standby / Pause asked (an older waking / playing command is not sent) */
     this.standbySeq = new Map();
     this.pauseSeq = new Map();
+    /** device id -> number of Mute asked (an older volume still waiting is not sent) */
+    this.muteSeq = new Map();
+    /** device id -> number given to the last command arrived (the order of the requests) */
+    this.arrivals = new Map();
+    /** device id -> arrival number of the latest waking command whose write may have left */
+    this.lastWakeLeft = new Map();
+    /** device id -> tail of the play/pause toggles (one toggle in flight at a time) */
+    this.toggles = new Map();
+    /** device id -> the Pause running (a second Pause joins it) */
+    this.pausing = new Map();
+    /** device ids whose last Play toggle may have left without being confirmed */
+    this.playUnconfirmed = new Set();
+    /** The load of /data, shared by every caller. */
+    this.loading = undefined;
     this.generation = 0;
     this.tickTimer = undefined;
     this.persistTimer = undefined;
@@ -153,21 +164,36 @@ export class KefApp {
       this.lastStatus = undefined;
       this.publisher.forget();
     }
-    if (!this.data) {
-      try {
-        this.data = await this.store.load();
-      } catch {
-        this.data = emptyData();
-      }
-      if (this.store.corrupted) {
-        this.logger.warn('Unreadable /data/kef.json moved to kef.json.bad');
-      }
-    }
+    await this.ensureData();
     await this.step('read the Gladys devices', () => this.refreshCreated());
     await this.step('open the read loops', () => this.syncLinks());
     await this.step('publish the devices', () => this.publishDevices());
     await this.step('publish the states', () => this.publishAllStates());
     await this.step('publish the status', () => this.updateStatus());
+  }
+
+  /**
+   * /data, loaded once: two starts at the same time (`connected` and a
+   * configuration saved) and a command arrived meanwhile wait for the same
+   * load, which never overwrites a table already in use.
+   */
+  ensureData() {
+    if (this.data) {
+      return Promise.resolve(this.data);
+    }
+    if (!this.loading) {
+      this.loading = Promise.resolve()
+        .then(() => this.store.load())
+        .catch(() => emptyData())
+        .then((data) => {
+          this.data ??= data;
+          if (this.store.corrupted) {
+            this.logger.warn('Unreadable /data/kef.json moved to kef.json.bad');
+          }
+          return this.data;
+        });
+    }
+    return this.loading;
   }
 
   async step(name, task) {
@@ -295,6 +321,12 @@ export class KefApp {
         this.links.delete(key);
       }
     }
+    // Only the addresses in use keep their last read in /data.
+    for (const key of Object.keys(this.data.attempts)) {
+      if (!wanted.has(key)) {
+        delete this.data.attempts[key];
+      }
+    }
     for (const [key, address] of wanted) {
       const existing = this.links.get(key);
       if (existing) {
@@ -317,6 +349,14 @@ export class KefApp {
         state: undefined,
         lastError: undefined,
         readAt: undefined,
+        /** when the name and model were last read */
+        infoAt: -Infinity,
+        /** bumped by every value a command reads back (see noteState) */
+        version: 0,
+        /** field -> version of the command value that set it */
+        noted: Object.create(null),
+        /** the address of the same speaker answering elsewhere, when this one is a duplicate */
+        duplicateOf: undefined,
       };
       // After a restart: a read made shortly before it may not be in /data
       // yet (written at most once a minute), so a recent one waits a whole
@@ -334,6 +374,10 @@ export class KefApp {
 
   /** The wait between two reads of an address: the interval, longer for a silent one. */
   readDelay(link) {
+    if (link.duplicateOf) {
+      // The same speaker is read at its other address: this one only checks, spaced.
+      return Math.max(this.timings.backoffMax, this.config.pollInterval);
+    }
     const extra = link.failures - this.timings.offlineAfter;
     if (extra < 0) {
       return this.config.pollInterval;
@@ -390,12 +434,32 @@ export class KefApp {
     const client = new KefClient({ host: link.host, port: link.port, request: this.request });
     const options = { timeout: this.timings.requestTimeout };
     const soft = (promise) => promise.catch(() => undefined);
+    const version = link.version;
     try {
       const mac = await client.mac(options);
       if (!alive()) return;
-      const known = this.data.devices[mac];
+      const known = Object.hasOwn(this.data.devices, mac) ? this.data.devices[mac] : undefined;
+      // The same speaker answering at another typed address (its IP and its
+      // name): one loop per speaker, this address only checked, spaced.
+      const primary = known?.host ? this.links.get(addressKey(known)) : undefined;
+      if (primary && primary !== link && primary.deviceId === mac && primary.state) {
+        if (link.duplicateOf !== primary.key) {
+          this.logger.info(`${link.key} is the same speaker as ${primary.key}: read there only`);
+        }
+        link.duplicateOf = primary.key;
+        link.failures = 0;
+        link.lastError = undefined;
+        link.deviceId = undefined;
+        link.state = undefined;
+        this.updateStatus().catch(() => {});
+        return;
+      }
+      link.duplicateOf = undefined;
       let info;
-      if (!known || !known.model || !known.name) {
+      // The name and the model when unknown: at most every 10 minutes (a
+      // speaker without a name never costs two more requests at every read).
+      if (!known || ((!known.model || !known.name) && this.now() - link.infoAt >= 600_000)) {
+        link.infoAt = this.now();
         const name = await soft(client.name(options));
         const release = (await soft(client.release(options))) ?? {};
         info = { name, model: release.model };
@@ -410,14 +474,30 @@ export class KefApp {
       if (!alive()) return;
       const device = this.remember(mac, info, link);
       if (!device) {
+        // Not kept (table full): what was known at this address is no longer true.
+        const before = link.deviceId;
+        link.deviceId = undefined;
+        link.state = null;
+        if (before) {
+          this.schedulePublish(before, 0);
+        }
         return;
       }
       const wasLost = link.state === null || link.deviceId !== mac;
       link.failures = 0;
       link.lastError = undefined;
+      const state = { on, source, volume, mute, player };
+      // A value a command read back after this read began is newer: kept.
+      if (link.deviceId === mac && link.state) {
+        for (const field of Object.keys(state)) {
+          if ((link.noted[field] ?? -Infinity) > version) {
+            state[field] = link.state[field];
+          }
+        }
+      }
       link.deviceId = mac;
       link.readAt = this.now();
-      link.state = { on, source, volume, mute, player };
+      link.state = state;
       if (on) {
         this.awaitingWake.delete(mac);
       }
@@ -453,6 +533,12 @@ export class KefApp {
     const table = this.data.devices;
     let device = Object.hasOwn(table, mac) ? table[mac] : undefined;
     let changed = false;
+    // Whatever happens next, a known speaker no longer at this address loses it.
+    for (const other of this.devices) {
+      if (other.id !== mac && other.host === link.host && other.port === link.port) {
+        this.loseAddress(other);
+      }
+    }
     if (!device) {
       if (Object.keys(table).length >= LIMITS.devices) {
         this.warnOnce('devices', `More than ${LIMITS.devices} speakers: the next ones are ignored`);
@@ -461,11 +547,6 @@ export class KefApp {
       device = { id: mac, host: '', port: DEFAULT_PORT };
       table[mac] = device;
       changed = true;
-    }
-    for (const other of this.devices) {
-      if (other.id !== mac && other.host === link.host && other.port === link.port) {
-        this.loseAddress(other);
-      }
     }
     if (device.host !== link.host || device.port !== link.port) {
       device.host = link.host;
@@ -576,6 +657,10 @@ export class KefApp {
     const link = this.linkOf(device);
     if (link && link.deviceId === device.id && link.state) {
       Object.assign(link.state, values);
+      link.version += 1;
+      for (const field of Object.keys(values)) {
+        link.noted[field] = link.version;
+      }
       if (values.on === true) {
         this.awaitingWake.delete(device.id);
       }
@@ -671,6 +756,8 @@ export class KefApp {
    * budget. The ack never waits for a publication to Gladys.
    */
   async setValue(gladysDevice, feature, value) {
+    // A command arrived while /data is still loading waits for it.
+    await this.ensureData();
     const device = this.deviceOf(gladysDevice);
     if (!device) {
       throw new CommandError(`Unknown speaker ${short(gladysDevice?.external_id)}`);
@@ -679,40 +766,66 @@ export class KefApp {
     const checked = this.validate(key, value);
     const started = this.now();
     const id = device.id;
+    // The order of the requests, not of their answers, decides between a
+    // Standby and a waking command.
+    const arrival = (this.arrivals.get(id) ?? 0) + 1;
+    this.arrivals.set(id, arrival);
     const standbySeq = this.standbySeq.get(id) ?? 0;
     const pauseSeq = this.pauseSeq.get(id) ?? 0;
+    const muteSeq = this.muteSeq.get(id) ?? 0;
+    const changed = (map, seq) => (map.get(id) ?? 0) !== seq;
     const context = {
+      arrival,
       // Set just before a write leaves: from then on it may have reached the
       // speaker, whatever happens next.
       mayHaveSent: false,
       late: false,
-      // A Standby (or a Pause) asked after this command arrived wins: a
-      // command that would wake the speaker (or make it play) is then not
-      // sent; checked when its turn comes and again right before each write.
+      // A Standby (a Pause, a Mute) asked after this command arrived wins: a
+      // command that would wake the speaker (make it play, make it heard) is
+      // then not sent; checked when its turn comes and again right before
+      // each write.
       shouldSend: () =>
         !context.late &&
-        (!WAKES.has(key) || (this.standbySeq.get(id) ?? 0) === standbySeq) &&
-        (!PLAYS.has(key) || (this.pauseSeq.get(id) ?? 0) === pauseSeq),
+        (!WAKES.has(key) || !changed(this.standbySeq, standbySeq)) &&
+        (!PLAYS.has(key) || !changed(this.pauseSeq, pauseSeq)) &&
+        (key !== FEATURES.VOLUME || !changed(this.muteSeq, muteSeq)),
       /** Why `shouldSend` said no. */
-      refusal: () =>
-        context.late
-          ? new CommandError(`${deviceName(device)}: no time left for this command, nothing sent`)
-          : this.cancelled(
-              device,
-              WAKES.has(key) && (this.standbySeq.get(id) ?? 0) !== standbySeq ? 'Standby' : 'Pause',
-            ),
+      refusal: () => {
+        if (context.late) {
+          return new CommandError(
+            `${deviceName(device)}: no time left for this command, nothing sent`,
+          );
+        }
+        if (WAKES.has(key) && changed(this.standbySeq, standbySeq)) {
+          return this.cancelled(device, 'Standby');
+        }
+        return this.cancelled(device, key === FEATURES.VOLUME ? 'Mute' : 'Pause');
+      },
     };
     let run;
-    if (PROTECTIVE.has(key)) {
-      if (key === FEATURES.STANDBY) {
-        this.standbySeq.set(id, standbySeq + 1);
-        this.dropQueued(id, WAKES, this.cancelled(device, 'Standby'));
-      } else {
-        this.pauseSeq.set(id, pauseSeq + 1);
-        this.dropQueued(id, PLAYS, this.cancelled(device, 'Pause'));
-      }
+    if (key === FEATURES.STANDBY) {
+      this.standbySeq.set(id, standbySeq + 1);
+      this.dropQueued(id, WAKES, this.cancelled(device, 'Standby'));
       run = this.command(device, key, checked, started, context);
+    } else if (key === FEATURES.PAUSE) {
+      this.pauseSeq.set(id, pauseSeq + 1);
+      this.dropQueued(id, PLAYS, this.cancelled(device, 'Pause'));
+      // A second Pause while one runs joins it: never a second toggle.
+      run = this.pausing.get(id);
+      if (!run) {
+        run = this.command(device, key, checked, started, context).finally(() => {
+          if (this.pausing.get(id) === run) {
+            this.pausing.delete(id);
+          }
+        });
+        this.pausing.set(id, run);
+      }
     } else {
+      if (key === FEATURES.MUTE) {
+        // The volumes asked before a Mute and still waiting would undo it.
+        this.muteSeq.set(id, muteSeq + 1);
+        this.dropQueued(id, new Set([FEATURES.VOLUME]), this.cancelled(device, 'Mute'));
+      }
       run = this.enqueue(
         id,
         () => {
@@ -784,7 +897,7 @@ export class KefApp {
    * address is forgotten; an unreadable answer only refuses the command
    * (it does not mean another speaker).
    */
-  async verify(device, client, started) {
+  async verify(device, client, started, { modelOptional = false } = {}) {
     if (!device.host) {
       throw new CommandError(
         `${deviceName(device)}: address unknown, type its new address in the configuration`,
@@ -798,12 +911,50 @@ export class KefApp {
       );
     }
     if (!device.model) {
-      const release = await this.readBefore(device, started, 'model', (o) => client.release(o));
+      let release;
+      try {
+        release = await this.readBefore(device, started, 'model', (o) => client.release(o));
+      } catch (err) {
+        // Standby never depends on a secondary value: it is sent anyway.
+        if (!modelOptional) {
+          throw err;
+        }
+        return;
+      }
       if (release.model) {
         device.model = release.model;
         this.persist();
       }
     }
+  }
+
+  /**
+   * The standby write. Without a model read, POST first (the method of the
+   * recent models) and, refused with a 4xx, GET once; the method that worked
+   * is kept in /data. Standby is the same whatever times it is sent.
+   */
+  async writeStandby(device, client, options) {
+    if (device.model) {
+      return client.standby({ ...options, model: device.model });
+    }
+    const method = device.writeMethod ?? 'POST';
+    try {
+      await client.standby({ ...options, method });
+    } catch (err) {
+      const refused = err.code === 'http' && err.status >= 400 && err.status < 500;
+      if (!refused || device.writeMethod) {
+        throw err;
+      }
+      await client.standby({ ...options, method: 'GET' });
+      device.writeMethod = 'GET';
+      this.persist();
+      return undefined;
+    }
+    if (!device.writeMethod) {
+      device.writeMethod = method;
+      this.persist();
+    }
+    return undefined;
   }
 
   /**
@@ -823,6 +974,17 @@ export class KefApp {
     try {
       await job({ timeout: Math.min(this.timings.requestTimeout, left), model: device.model });
     } catch (err) {
+      if (err instanceof CommandError) {
+        throw err;
+      }
+      if (err.code === 'http' && err.status >= 400 && err.status < 500) {
+        // Refused, said exactly; `sent` stays true inside, so the checks
+        // that follow a write that reached the speaker still run.
+        throw new CommandError(
+          `${deviceName(device)}: refused by the speaker (HTTP ${err.status}), nothing changed`,
+          { sent: true },
+        );
+      }
       if (err.maybeSent) {
         throw unconfirmed(device);
       }
@@ -860,12 +1022,26 @@ export class KefApp {
     const client = this.clientOf(device);
     const budget = () => this.remaining(started) - 100;
     const write = (job) => this.write(device, started, context, job);
-    await this.verify(device, client, started);
+    await this.verify(device, client, started, { modelOptional: key === FEATURES.STANDBY });
     switch (key) {
       case FEATURES.POWER_ON:
         return this.powerOn(device, client, started, context, budget);
       case FEATURES.STANDBY: {
-        await write((o) => client.standby(o));
+        try {
+          await write((o) => this.writeStandby(device, client, o));
+        } catch (err) {
+          if (err.sent) {
+            // Maybe sent (5xx, no answer in time, connection closed): the
+            // guard asserts it again, after one read of the power if time is left.
+            this.guardStandby(device, context.arrival);
+            await this.confirm(
+              (o) => client.status(o),
+              (on) => on === false,
+              () => Math.min(this.timings.preRead, budget()),
+            );
+          }
+          throw err;
+        }
         const off = await this.confirm(
           (o) => client.status(o),
           (on) => on === false,
@@ -873,7 +1049,7 @@ export class KefApp {
         );
         // A speaker still waking up from a Power on says "standby" too: not a confirmation.
         if (!off || this.wakingUp(device.id)) {
-          this.guardStandby(device);
+          this.guardStandby(device, context.arrival);
           throw unconfirmed(device);
         }
         this.noteState(device, { on: false });
@@ -907,7 +1083,7 @@ export class KefApp {
       case FEATURES.SOURCE: {
         const on = await this.readBefore(device, started, 'power state', (o) => client.status(o));
         // Choosing a source wakes a speaker in standby: the cap is checked after.
-        const restore = on ? undefined : this.expectWake(device);
+        const restore = on ? undefined : this.expectWake(device, context.arrival);
         try {
           await write((o) => client.setSource(value, o));
         } catch (err) {
@@ -915,18 +1091,26 @@ export class KefApp {
           throw err;
         }
         if (!on) {
-          this.afterWakeSent(device);
+          this.afterWakeSent(device, context.arrival);
         }
-        if (
-          !(await this.confirm(
-            (o) => client.source(o),
-            (s) => s === value,
-            budget,
-          ))
-        ) {
+        const confirmed = await this.confirm(
+          (o) => client.source(o),
+          (s) => s === value,
+          budget,
+        );
+        if (confirmed) {
+          this.noteState(device, { source: value, ...(on ? {} : { on: true }) });
+        }
+        if (!on) {
+          // Woken up: the volume brought back to the cap within what is left,
+          // as Power on does (the checks go on after).
+          await this.capVolume(device, client, () =>
+            Math.min(this.timings.preRead, budget()),
+          ).catch(() => false);
+        }
+        if (!confirmed) {
           throw unconfirmed(device);
         }
-        this.noteState(device, { source: value, ...(on ? {} : { on: true }) });
         return undefined;
       }
       case FEATURES.PLAY:
@@ -955,14 +1139,14 @@ export class KefApp {
    * wake-up window, whatever happens.
    */
   async powerOn(device, client, started, context, budget) {
-    const restore = this.expectWake(device);
+    const restore = this.expectWake(device, context.arrival);
     try {
       await this.write(device, started, context, (o) => client.powerOn(o));
     } catch (err) {
       restore(err.sent);
       throw err;
     }
-    this.afterWakeSent(device);
+    this.afterWakeSent(device, context.arrival);
     const on = await this.confirm(
       (o) => client.status(o),
       (value) => value === true,
@@ -1045,28 +1229,115 @@ export class KefApp {
         throw new CommandError(`${deviceName(device)}: in standby, nothing sent (Power on first)`);
       }
     }
+    // One toggle in flight at a time per speaker, from the read of the play
+    // state to its confirmation: two toggles on the same state would undo
+    // each other. Pause never waits in the queue, only behind this one
+    // toggle (bounded by its budget).
+    return this.withToggle(device.id, () =>
+      key === FEATURES.PLAY
+        ? this.togglePlay(device, client, started, context, budget)
+        : this.togglePause(device, client, started, context, budget),
+    );
+  }
+
+  withToggle(id, task) {
+    const previous = this.toggles.get(id) ?? Promise.resolve();
+    const run = previous.catch(() => {}).then(task);
+    const tail = run.catch(() => {});
+    this.toggles.set(id, tail);
+    tail.then(() => {
+      if (this.toggles.get(id) === tail) {
+        this.toggles.delete(id);
+      }
+    });
+    return run;
+  }
+
+  async togglePlay(device, client, started, context, budget) {
     const player = await this.readBefore(device, started, 'play state', (o) => client.player(o));
-    const wanted = key === FEATURES.PLAY ? 'playing' : 'paused';
-    const from = key === FEATURES.PLAY ? 'paused' : 'playing';
-    if (player.state === wanted || (key === FEATURES.PAUSE && player.state === 'stopped')) {
+    if (player.state === 'playing') {
       return undefined;
     }
-    if (player.state !== from) {
+    if (player.state !== 'paused') {
+      throw new CommandError(
+        `${deviceName(device)}: play state ${player.state ?? 'unknown'}, nothing sent`,
+      );
+    }
+    try {
+      await this.write(device, started, context, (o) => client.control('pause', o));
+    } catch (err) {
+      if (err.sent) {
+        this.playUnconfirmed.add(device.id);
+      }
+      throw err;
+    }
+    this.playUnconfirmed.add(device.id);
+    const playing = await this.confirm(
+      (o) => client.player(o),
+      (p) => p.state === 'playing',
+      budget,
+    );
+    if (!playing) {
+      throw unconfirmed(device);
+    }
+    this.playUnconfirmed.delete(device.id);
+    this.noteState(device, { player: { ...player, state: 'playing' } });
+    return undefined;
+  }
+
+  /**
+   * Pause: the play state read again until it is a settled one (playing,
+   * paused, stopped; a "buffering" waits within the budget). Already paused
+   * or stopped is "nothing to send", except while a Play toggle may have
+   * left unconfirmed: then the playing state is waited for, then toggled.
+   */
+  async togglePause(device, client, started, context, budget) {
+    const settled = new Set(['playing', 'paused', 'stopped']);
+    const id = device.id;
+    let player = await this.readBefore(device, started, 'play state', (o) => client.player(o));
+    const waitFor = async (check) => {
+      let found;
+      await this.confirm(
+        (o) => client.player(o),
+        (p) => {
+          found = p;
+          return check(p);
+        },
+        budget,
+      );
+      return found;
+    };
+    if (!settled.has(player.state)) {
+      player = (await waitFor((p) => settled.has(p.state))) ?? player;
+    }
+    if (player.state !== 'playing' && this.playUnconfirmed.has(id)) {
+      player = (await waitFor((p) => p.state === 'playing')) ?? player;
+      if (player.state !== 'playing') {
+        throw new CommandError(
+          `${deviceName(device)}: a Play sent before is not confirmed (play state ${player.state ?? 'unknown'}), nothing sent`,
+        );
+      }
+    }
+    if (player.state === 'paused' || player.state === 'stopped') {
+      return undefined;
+    }
+    if (player.state !== 'playing') {
       throw new CommandError(
         `${deviceName(device)}: play state ${player.state ?? 'unknown'}, nothing sent`,
       );
     }
     await this.write(device, started, context, (o) => client.control('pause', o));
+    this.playUnconfirmed.delete(id);
     if (
       !(await this.confirm(
         (o) => client.player(o),
-        (p) => p.state === wanted,
+        (p) => p.state === 'paused',
         budget,
       ))
     ) {
       throw unconfirmed(device);
     }
-    this.noteState(device, { player: { ...player, state: wanted } });
+    this.noteState(device, { player: { ...player, state: 'paused' } });
     return undefined;
   }
 
@@ -1077,27 +1348,52 @@ export class KefApp {
    * meanwhile is not a confirmation). Returns how to put it back when the
    * write did not leave.
    */
-  expectWake(device) {
-    const before = this.awaitingWake.get(device.id);
-    this.awaitingWake.set(
-      device.id,
-      this.now() + this.timings.wakeChecks * this.timings.wakeCheckDelay,
-    );
+  expectWake(device, arrival) {
+    const id = device.id;
+    const before = this.awaitingWake.get(id);
+    const leftBefore = this.lastWakeLeft.get(id);
+    this.awaitingWake.set(id, this.now() + this.timings.wakeChecks * this.timings.wakeCheckDelay);
+    // From now on the waking write may leave: a Standby asked before this
+    // command never asserts itself over it.
+    if (!(leftBefore >= arrival)) {
+      this.lastWakeLeft.set(id, arrival);
+    }
     return (sent) => {
       if (sent) {
-        this.afterWakeSent(device);
-      } else if (before === undefined) {
-        this.awaitingWake.delete(device.id);
+        this.afterWakeSent(device, arrival);
+        return;
+      }
+      if (before === undefined) {
+        this.awaitingWake.delete(id);
       } else {
-        this.awaitingWake.set(device.id, before);
+        this.awaitingWake.set(id, before);
+      }
+      if (this.lastWakeLeft.get(id) === arrival) {
+        if (leftBefore === undefined) {
+          this.lastWakeLeft.delete(id);
+        } else {
+          this.lastWakeLeft.set(id, leftBefore);
+        }
       }
     };
   }
 
-  /** A waking write may have left: the guard of a Standby stops, the cap checks start over. */
-  afterWakeSent(device) {
-    this.stopChain(this.guards, device.id);
+  /**
+   * A waking write may have left: the cap checks start over, and the guard
+   * of a Standby stops, only when that Standby was asked before this command
+   * (a Standby asked after it wins).
+   */
+  afterWakeSent(device, arrival) {
+    const guard = this.guards.get(device.id);
+    if (guard && guard.arrival < arrival) {
+      this.stopChain(this.guards, device.id);
+    }
     this.capChain(device);
+  }
+
+  /** Whether a waking command asked after the Standby number `arrival` may have left. */
+  newerWakeLeft(id, arrival) {
+    return (this.lastWakeLeft.get(id) ?? 0) > arrival;
   }
 
   wakingUp(id) {
@@ -1177,7 +1473,9 @@ export class KefApp {
       chain.timer = this.timers.setTimeout(() => {
         if (!current()) return;
         this.enqueue(id, () => {
-          const deadline = this.now() + 3 * this.timings.requestTimeout;
+          // One step holds the queue `preRead` at most (a lowering ignored
+          // is tried again at the next step): the commands never starve.
+          const deadline = this.now() + this.timings.preRead;
           return device.host && current()
             ? this.capVolume(device, this.clientOf(device), () => deadline - this.now(), current)
             : false;
@@ -1195,14 +1493,28 @@ export class KefApp {
    * blocked). A write that fails keeps the guard going. A waking command of
    * Gladys that may have left ends it.
    */
-  guardStandby(device) {
+  guardStandby(device, arrival) {
     const id = device.id;
+    if (this.newerWakeLeft(id, arrival)) {
+      // A Power on (or a source) asked after this Standby already left: it wins.
+      return;
+    }
+    const existing = this.guards.get(id);
+    if (existing && existing.arrival > arrival) {
+      return;
+    }
     this.stopChain(this.guards, id);
-    const chain = { timer: undefined, attempt: 0 };
+    const chain = { timer: undefined, attempt: 0, arrival };
     this.guards.set(id, chain);
-    const current = () => this.guards.get(id) === chain && this.started;
+    const current = () =>
+      this.guards.get(id) === chain && this.started && !this.newerWakeLeft(id, arrival);
     const next = () => {
-      if (!current()) return;
+      if (!current()) {
+        if (this.guards.get(id) === chain) {
+          this.guards.delete(id);
+        }
+        return;
+      }
       chain.attempt += 1;
       if (chain.attempt > this.timings.guardChecks) {
         this.guards.delete(id);
@@ -1218,7 +1530,7 @@ export class KefApp {
               this.logger.info(
                 `${deviceName(device)}: still on after Standby, standby asked again`,
               );
-              await client.standby({ ...options, model: device.model });
+              await this.writeStandby(device, client, options);
             }
           }
         } catch (err) {
@@ -1313,6 +1625,12 @@ export class KefApp {
       .filter((key) => this.links.get(key)?.lastError);
     if (silent.length > 0) {
       notes.push(T.noAnswerAt(silent));
+    }
+    const duplicates = [...this.links.values()]
+      .filter((link) => link.duplicateOf)
+      .map((link) => `${link.key} = ${link.duplicateOf}`);
+    if (duplicates.length > 0) {
+      notes.push(T.duplicates(duplicates));
     }
     const lost = this.devices.filter((d) => this.created.has(d.id) && !d.host).map(deviceName);
     if (lost.length > 0) {

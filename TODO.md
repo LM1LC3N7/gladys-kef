@@ -24,6 +24,22 @@ up to date at the end of every milestone.
       on the loopback interface only, never with a real speaker. The store
       validator could not be run from the development session (no access to
       it there): to run before the first release.
+- [x] **Fix review 1** (2026-10-21): commands numbered at arrival, the
+      Standby guard ended only by a newer wake-up and never started or
+      written over one; a Standby maybe sent (5xx, no answer) starts the
+      guard and reads the power; one play/pause toggle in flight per
+      speaker, a second Pause joins the first, Pause waits for a settled
+      state and never says "nothing to send" while a Play toggle is
+      unconfirmed; Mute cancels the older volumes waiting; a source chosen
+      in standby caps the volume within the command; a cap check step holds
+      the queue `preRead` at most. Minor: Standby sent without a model (POST,
+      then GET on a 4xx, kept in /data); a read begun before a command keeps
+      the value read back; one loop per MAC (a second address of the same
+      speaker is only checked, spaced, and named in the status); a 4xx write
+      is "refused"; a full table still takes the address from the old
+      speaker; /data loaded once (commands wait for it), unused addresses
+      pruned; name and model of a speaker without a name read at most every
+      10 minutes. Tests in `test/review1.test.js`.
 - [ ] **Milestone 2 — real speakers** (testers with an LS50 Wireless II,
       LSX II, LSX II LT, LS60 or XIO). To check first:
   - the answer to `setData` (body, status) for POST and GET, and whether a
@@ -36,6 +52,9 @@ up to date at the end of every milestone.
     write of `bool_` unmutes, so the mute could stop using volume 0;
   - the play states (`playing`, `paused`, `stopped`...) and what the
     `pause` toggle does from `stopped`;
+  - whether a source change on a speaker already on changes the volume
+    (a volume per input): if so, start the cap checks (`capChain`) after
+    every source change, not only after one made in standby;
   - the inputs of each model (USB on the LSX II? HDMI on the XIO?), and
     whether the XIO takes POST writes;
   - the MAC address format of `settings:/system/primaryMacAddress`;
@@ -102,7 +121,8 @@ up to date at the end of every milestone.
   before the write. The feature range stays 0..100 (frozen at creation).
   Cap checks after a wake-up (Power on, a source chosen in standby) and after
   a volume write not confirmed (accepted and ignored): every 2.5 s, 6 times,
-  through the queue, the whole window (not stopped at the first good read),
+  through the queue, each step holding the queue `preRead` (1.2 s) at most
+  (review 1), the whole window (not stopped at the first good read),
   each one lowering a volume above the cap and confirming by the value read
   back. A Standby does not stop them (they only lower a speaker that says it
   is on).
@@ -131,6 +151,34 @@ up to date at the end of every milestone.
   not confirmed starts a guard: every 2.5 s, 8 times, the speaker read "on"
   is put in standby again (outside the queue); a failed write keeps the
   guard going; a waking command of Gladys that may have left ends it.
+- (Review 1) Order of the requests: every command gets an arrival number
+  per speaker. `lastWakeLeft` is the number of the latest waking command
+  (Power on, a source in standby) whose write may have left (set as it
+  leaves, put back when nothing left). A Standby guard stops only for a
+  waking command asked after its Standby; it never starts, and never
+  writes, once a waking command asked after it may have left. A Standby
+  write maybe sent (5xx, timeout after writing, connection closed) starts
+  the guard and reads the power once (`preRead`) before answering "sent,
+  without confirmation"; a 4xx is "refused by the speaker (HTTP 4xx),
+  nothing changed" (still counted as reached, for the checks).
+- (Review 1) Toggles: one play/pause toggle in flight per speaker
+  (`withToggle`, from the read of the state to its confirmation), separate
+  from the queue: Pause still never waits in the queue, only behind that
+  one toggle. A Pause pressed while one runs joins it. Pause reads the play
+  state until it is settled (buffering waits within the budget), and while
+  a Play toggle may have left unconfirmed it waits for `playing` instead of
+  answering "nothing to send".
+- (Review 1) Mute cancels the volumes asked before it and still waiting
+  ("cancelled by Mute"); a volume running reads the Mute count again right
+  before its write. Mute keeps its place before the other commands.
+- (Review 1) Standby without a model read (release text failing): sent
+  anyway, POST then GET once on a 4xx; the method that worked is kept in
+  /data (`writeMethod`). The other commands still need the model.
+- (Review 1) A read begun before a command does not overwrite a value the
+  command read back after it began (`version` / `noted` per link). One read
+  loop per MAC: a second typed address answering with the MAC of a speaker
+  read elsewhere is a duplicate, read only every 5 minutes to notice a
+  move, and named in the status.
 - Play / pause: the API only has the `pause` toggle; it is sent only after
   the play state read again says it is needed (Play from `paused`, Pause
   from `playing`), nothing sent when already as asked (Pause on `stopped`
