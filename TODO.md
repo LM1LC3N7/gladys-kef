@@ -40,6 +40,15 @@ up to date at the end of every milestone.
       speaker; /data loaded once (commands wait for it), unused addresses
       pruned; name and model of a speaker without a name read at most every
       10 minutes. Tests in `test/review1.test.js`.
+- [x] **Fix review 2** (2026-10-21): the "Play maybe sent" mark expires
+      (command budget + one check delay) and is never set by a 4xx; Pause on
+      a speaker paused (mark expired), stopped or in standby is "nothing to
+      send"; the cap checks read outside the queue (each read bounded by one
+      request timeout), only the lowering and its read-back are queued
+      (`preRead`), so a slow speaker is still brought back to the cap; every
+      waking write (source, play, next, previous) counts as the newest
+      wake-up for the Standby guard; the duplicate-address check is made
+      again just before a read is kept (two first reads at once).
 - [ ] **Milestone 2 — real speakers** (testers with an LS50 Wireless II,
       LSX II, LSX II LT, LS60 or XIO). To check first:
   - the answer to `setData` (body, status) for POST and GET, and whether a

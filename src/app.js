@@ -133,7 +133,8 @@ export class KefApp {
     /** device id -> the Pause running (a second Pause joins it) */
     this.pausing = new Map();
     /** device ids whose last Play toggle may have left without being confirmed */
-    this.playUnconfirmed = new Set();
+    /** device id -> until when its last Play toggle may have left without being confirmed */
+    this.playUnconfirmed = new Map();
     /** The load of /data, shared by every caller. */
     this.loading = undefined;
     this.generation = 0;
@@ -439,19 +440,7 @@ export class KefApp {
       const mac = await client.mac(options);
       if (!alive()) return;
       const known = Object.hasOwn(this.data.devices, mac) ? this.data.devices[mac] : undefined;
-      // The same speaker answering at another typed address (its IP and its
-      // name): one loop per speaker, this address only checked, spaced.
-      const primary = known?.host ? this.links.get(addressKey(known)) : undefined;
-      if (primary && primary !== link && primary.deviceId === mac && primary.state) {
-        if (link.duplicateOf !== primary.key) {
-          this.logger.info(`${link.key} is the same speaker as ${primary.key}: read there only`);
-        }
-        link.duplicateOf = primary.key;
-        link.failures = 0;
-        link.lastError = undefined;
-        link.deviceId = undefined;
-        link.state = undefined;
-        this.updateStatus().catch(() => {});
+      if (this.markDuplicate(link, mac)) {
         return;
       }
       link.duplicateOf = undefined;
@@ -472,6 +461,10 @@ export class KefApp {
       const mute = await soft(client.mute(options));
       const player = on ? await soft(client.player(options)) : undefined;
       if (!alive()) return;
+      // Checked again: the other address may have finished its read meanwhile.
+      if (this.markDuplicate(link, mac)) {
+        return;
+      }
       const device = this.remember(mac, info, link);
       if (!device) {
         // Not kept (table full): what was known at this address is no longer true.
@@ -522,6 +515,29 @@ export class KefApp {
         this.updateStatus().catch(() => {});
       }
     }
+  }
+
+  /**
+   * The same speaker answering at another typed address (its IP and its
+   * name), read there with a state: one loop per speaker, this address only
+   * checked, spaced. True when `link` is such a duplicate.
+   */
+  markDuplicate(link, mac) {
+    const known = Object.hasOwn(this.data.devices, mac) ? this.data.devices[mac] : undefined;
+    const primary = known?.host ? this.links.get(addressKey(known)) : undefined;
+    if (!primary || primary === link || primary.deviceId !== mac || !primary.state) {
+      return false;
+    }
+    if (link.duplicateOf !== primary.key) {
+      this.logger.info(`${link.key} is the same speaker as ${primary.key}: read there only`);
+    }
+    link.duplicateOf = primary.key;
+    link.failures = 0;
+    link.lastError = undefined;
+    link.deviceId = undefined;
+    link.state = undefined;
+    this.updateStatus().catch(() => {});
+    return true;
   }
 
   /**
@@ -776,6 +792,7 @@ export class KefApp {
     const changed = (map, seq) => (map.get(id) ?? 0) !== seq;
     const context = {
       arrival,
+      key,
       // Set just before a write leaves: from then on it may have reached the
       // speaker, whatever happens next.
       mayHaveSent: false,
@@ -971,6 +988,24 @@ export class KefApp {
       throw new CommandError(`${deviceName(device)}: no time left for this command, nothing sent`);
     }
     context.mayHaveSent = true;
+    // Any waking command (source, play, next, previous, power on) whose
+    // write may leave is the newest wake-up from now on: the guard of a
+    // Standby asked before it stops (put back when nothing left).
+    const id = device.id;
+    const wakes = WAKES.has(context.key);
+    const leftBefore = this.lastWakeLeft.get(id);
+    if (wakes && !(leftBefore >= context.arrival)) {
+      this.lastWakeLeft.set(id, context.arrival);
+    }
+    const putBack = () => {
+      if (wakes && this.lastWakeLeft.get(id) === context.arrival) {
+        if (leftBefore === undefined) {
+          this.lastWakeLeft.delete(id);
+        } else {
+          this.lastWakeLeft.set(id, leftBefore);
+        }
+      }
+    };
     try {
       await job({ timeout: Math.min(this.timings.requestTimeout, left), model: device.model });
     } catch (err) {
@@ -980,15 +1015,18 @@ export class KefApp {
       if (err.code === 'http' && err.status >= 400 && err.status < 500) {
         // Refused, said exactly; `sent` stays true inside, so the checks
         // that follow a write that reached the speaker still run.
-        throw new CommandError(
+        const refused = new CommandError(
           `${deviceName(device)}: refused by the speaker (HTTP ${err.status}), nothing changed`,
           { sent: true },
         );
+        refused.refused = true;
+        throw refused;
       }
       if (err.maybeSent) {
         throw unconfirmed(device);
       }
       context.mayHaveSent = false;
+      putBack();
       throw new CommandError(`${deviceName(device)}: not sent (${err.message})`);
     }
   }
@@ -1263,15 +1301,22 @@ export class KefApp {
         `${deviceName(device)}: play state ${player.state ?? 'unknown'}, nothing sent`,
       );
     }
+    // A Play toggle that may have left is "maybe playing soon" for a short
+    // while only (as `awaitingWake`); never for a write refused (4xx).
+    const mark = () =>
+      this.playUnconfirmed.set(
+        device.id,
+        this.now() + this.timings.commandBudget + this.timings.wakeCheckDelay,
+      );
     try {
       await this.write(device, started, context, (o) => client.control('pause', o));
     } catch (err) {
-      if (err.sent) {
-        this.playUnconfirmed.add(device.id);
+      if (err.sent && !err.refused) {
+        mark();
       }
       throw err;
     }
-    this.playUnconfirmed.add(device.id);
+    mark();
     const playing = await this.confirm(
       (o) => client.player(o),
       (p) => p.state === 'playing',
@@ -1291,6 +1336,19 @@ export class KefApp {
    * or stopped is "nothing to send", except while a Play toggle may have
    * left unconfirmed: then the playing state is waited for, then toggled.
    */
+  /** Whether a Play toggle may have left unconfirmed, within its short window. */
+  playPending(id) {
+    const until = this.playUnconfirmed.get(id);
+    if (until === undefined) {
+      return false;
+    }
+    if (until < this.now()) {
+      this.playUnconfirmed.delete(id);
+      return false;
+    }
+    return true;
+  }
+
   async togglePause(device, client, started, context, budget) {
     const settled = new Set(['playing', 'paused', 'stopped']);
     const id = device.id;
@@ -1310,11 +1368,16 @@ export class KefApp {
     if (!settled.has(player.state)) {
       player = (await waitFor((p) => settled.has(p.state))) ?? player;
     }
-    if (player.state !== 'playing' && this.playUnconfirmed.has(id)) {
-      player = (await waitFor((p) => p.state === 'playing')) ?? player;
-      if (player.state !== 'playing') {
+    // A speaker in standby or stopped has nothing to pause, whatever a Play
+    // sent before.
+    if (player.state === 'paused' && this.playPending(id)) {
+      player =
+        (await waitFor(
+          (p) => p.state === 'playing' || p.state === 'stopped' || !this.playPending(id),
+        )) ?? player;
+      if (player.state === 'paused' && this.playPending(id)) {
         throw new CommandError(
-          `${deviceName(device)}: a Play sent before is not confirmed (play state ${player.state ?? 'unknown'}), nothing sent`,
+          `${deviceName(device)}: a Play sent just before is not confirmed (play state paused), nothing sent`,
         );
       }
     }
@@ -1441,6 +1504,52 @@ export class KefApp {
     return done;
   }
 
+  /**
+   * One step of the cap checks. The reads (identity, power, volume) are made
+   * outside the queue, each bounded by one request timeout: they hold no
+   * command back, however slow the speaker. Only the lowering and its
+   * read-back go through the queue, bounded by `preRead` together (the
+   * commands never starve; a lowering ignored is tried again at the next
+   * step). True when the volume is at or under the cap.
+   */
+  async capStep(device, current) {
+    if (!device.host || !current()) {
+      return false;
+    }
+    const client = this.clientOf(device);
+    const options = { timeout: this.timings.requestTimeout };
+    if ((await client.mac(options)) !== device.id || !current()) return false;
+    if ((await client.status(options)) !== true || !current()) return false;
+    const volume = await client.volume(options);
+    if (volume <= this.config.maxVolume) {
+      return true;
+    }
+    if (!current()) return false;
+    return this.enqueue(device.id, async () => {
+      if (!current() || !device.host) {
+        return false;
+      }
+      const deadline = this.now() + this.timings.preRead;
+      const budget = () => deadline - this.now();
+      // The cap is read here, just before the write.
+      const cap = this.config.maxVolume;
+      this.logger.info(`${deviceName(device)}: volume ${volume} above the cap, lowered to ${cap}`);
+      await client.setVolume(cap, {
+        timeout: Math.min(this.timings.requestTimeout, budget()),
+        model: device.model,
+      });
+      const done = await this.confirm(
+        (o) => client.volume(o),
+        (v) => v <= this.config.maxVolume,
+        budget,
+      );
+      if (done) {
+        this.noteState(device, { volume: Math.min(volume, cap) });
+      }
+      return done;
+    });
+  }
+
   stopChain(map, id) {
     const chain = map.get(id);
     if (chain) {
@@ -1472,14 +1581,7 @@ export class KefApp {
       }
       chain.timer = this.timers.setTimeout(() => {
         if (!current()) return;
-        this.enqueue(id, () => {
-          // One step holds the queue `preRead` at most (a lowering ignored
-          // is tried again at the next step): the commands never starve.
-          const deadline = this.now() + this.timings.preRead;
-          return device.host && current()
-            ? this.capVolume(device, this.clientOf(device), () => deadline - this.now(), current)
-            : false;
-        })
+        this.capStep(device, current)
           .catch(() => false)
           .then(next);
       }, this.timings.wakeCheckDelay);

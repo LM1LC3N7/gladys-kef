@@ -349,3 +349,78 @@ test('13. a command arrived while /data loads waits for it; old addresses are pr
   assert.equal(fake.state.on, false, 'the Standby waited for /data and was sent');
   assert.equal(app.data.attempts['10.1.1.1'], undefined, 'an address no longer used is pruned');
 });
+
+// --- Review 2 ------------------------------------------------------------------------------
+
+test('R1a. a Play ignored once: later, Pause on the paused speaker is "nothing to send", OK', async (t) => {
+  const { fake, set } = await setup(t, { speaker: { playState: 'paused' } });
+  fake.ignore.add('player:player/control');
+  assert.match(await set('play'), /without confirmation/);
+  fake.ignore.delete('player:player/control');
+  await sleep(300);
+  assert.equal(await set('pause'), 'ok');
+  assert.equal(fake.state.playState, 'paused');
+});
+
+test('R1b. a Play refused with a 4xx never marks a Play as maybe sent', async (t) => {
+  let refuse = true;
+  const request = async (opts) => {
+    if (refuse && writeOf(opts)?.value?.control === 'pause') {
+      refuse = false;
+      throw new KefError('http', 'HTTP 400', { status: 400, maybeSent: true });
+    }
+    return httpRequest(opts);
+  };
+  const { set, app } = await setup(t, { speaker: { playState: 'paused' }, request });
+  assert.match(await set('play'), /refused by the speaker \(HTTP 400\)/);
+  assert.equal(app.playUnconfirmed.has(MAC), false);
+  const started = Date.now();
+  assert.equal(await set('pause'), 'ok');
+  assert.ok(Date.now() - started < 500, 'answered at once');
+});
+
+test('R1c. Play unconfirmed, then Standby: Pause on the silent speaker succeeds at once', async (t) => {
+  const { fake, set } = await setup(t, { speaker: { playState: 'paused' } });
+  fake.ignore.add('player:player/control');
+  await set('play');
+  fake.ignore.delete('player:player/control');
+  assert.equal(await set('standby'), 'ok');
+  const started = Date.now();
+  assert.equal(await set('pause'), 'ok');
+  assert.ok(Date.now() - started < 500);
+});
+
+test('R2. a slow speaker (400 ms an answer) waking up late is still brought back to the cap', async (t) => {
+  const { fake, set } = await setup(t, {
+    speaker: { on: false, volume: 20 },
+    timings: { ...TIMINGS, wakeCheckDelay: 100, wakeChecks: 6, publishDelay: 5, persistDelay: 5 },
+  });
+  fake.wakeVolume = 85;
+  fake.wakeDelay = 3_000;
+  for (const path of [
+    'settings:/system/primaryMacAddress',
+    'settings:/kef/host/speakerStatus',
+    'player:volume',
+  ]) {
+    fake.delays[path] = 400;
+  }
+  await set('power_on');
+  await waitFor(() => fake.state.volume === 40, 'lowered by the cap checks', 15_000);
+});
+
+test('R3. Standby ignored, then a source asked last while on: the older guard stops', async (t) => {
+  let drop = true;
+  const request = async (opts) => {
+    if (drop && writeOf(opts)?.value?.kefPhysicalSource === 'standby') {
+      drop = false;
+      return { status: 200, text: '[]' };
+    }
+    return httpRequest(opts);
+  };
+  const { fake, set, app } = await setup(t, { speaker: { on: true }, request });
+  assert.match(await set('standby'), /without confirmation/);
+  assert.equal(await set('source', 'tv'), 'ok');
+  await sleep(500);
+  assert.equal(fake.state.on, true, 'the last request (the source) wins');
+  assert.equal(app.guards.has(MAC), false);
+});

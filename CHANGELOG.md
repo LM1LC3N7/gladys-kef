@@ -61,6 +61,11 @@ the notes of the version's GitHub Release.
 
 ### Fixed
 
+- A Pause on a paused, stopped or sleeping speaker no longer fails after a
+  Play that was ignored or refused.
+- The cap checks after a wake-up also lower the volume of a slow speaker.
+- A source, play, next or previous asked after an unconfirmed Standby is no
+  longer undone by its guard.
 - A read begun before a command no longer republishes the older value.
 - The same speaker typed at two addresses is read at one of them only, and
   named in the status.
