@@ -49,6 +49,11 @@ up to date at the end of every milestone.
       waking write (source, play, next, previous) counts as the newest
       wake-up for the Standby guard; the duplicate-address check is made
       again just before a read is kept (two first reads at once).
+- [x] **Fix 0.1.2** (2026-10-22, recommendation of approval 2): the queued
+      lowering of a cap check that waited in the queue more than
+      `confirmEvery` reads the MAC again (bounded by its `preRead` budget)
+      before writing; another speaker or an unreadable MAC: nothing written,
+      the next step reads again. A free queue costs no extra request.
 - [ ] **Milestone 2 — real speakers** (testers with an LS50 Wireless II,
       LSX II, LSX II LT, LS60 or XIO). To check first:
   - the answer to `setData` (body, status) for POST and GET, and whether a

@@ -424,3 +424,39 @@ test('R3. Standby ignored, then a source asked last while on: the older guard st
   assert.equal(fake.state.on, true, 'the last request (the source) wins');
   assert.equal(app.guards.has(MAC), false);
 });
+
+// --- Fix 0.1.2 -----------------------------------------------------------------------------
+
+test('I1. another speaker takes the address while the lowering waits in the queue: it gets nothing', async (t) => {
+  let fakeRef;
+  let armed = false;
+  let swapped = false;
+  const request = async (opts) => {
+    const res = await httpRequest(opts);
+    if (armed && opts.path.startsWith('/api/getData') && opts.path.includes('volume')) {
+      armed = false;
+      // DHCP swap right after the step read speaker A at 85: speaker B (volume 10) answers now.
+      fakeRef.state.mac = '11:22:33:44:55:66';
+      fakeRef.state.volume = 10;
+      swapped = true;
+    }
+    return res;
+  };
+  const { fake, set } = await setup(t, { speaker: { volume: 30 }, request });
+  fakeRef = fake;
+  fake.ignore.add('player:volume');
+  fake.state.volume = 85;
+  await set('volume', 30); // ignored: the cap checks start
+  fake.ignore.delete('player:volume');
+  fake.delays['player:player/data'] = 300;
+  const play = set('play'); // holds the queue ~300 ms
+  armed = true; // the next volume read is the step's, outside the queue
+  await play;
+  await sleep(300);
+  assert.ok(swapped, 'swap staged after the step read');
+  assert.equal(fake.state.volume, 10, 'speaker B never written');
+  assert.ok(
+    writes(fake, 'player:volume').every((w) => w.value.i32_ === 30),
+    'only the volume command itself was written',
+  );
+});

@@ -1525,12 +1525,28 @@ export class KefApp {
       return true;
     }
     if (!current()) return false;
+    const queuedAt = this.now();
     return this.enqueue(device.id, async () => {
       if (!current() || !device.host) {
         return false;
       }
       const deadline = this.now() + this.timings.preRead;
       const budget = () => deadline - this.now();
+      // Waited in the queue: the address may now be another speaker's (DHCP).
+      // The identity is read again before writing; another speaker or an
+      // unreadable answer: nothing written, the next step reads again. A
+      // free queue costs nothing.
+      if (this.now() - queuedAt > this.timings.confirmEvery) {
+        if (budget() < this.timings.minRequest) {
+          return false;
+        }
+        const mac = await client
+          .mac({ timeout: Math.min(this.timings.requestTimeout, budget()) })
+          .catch(() => undefined);
+        if (mac !== device.id || !current() || budget() < this.timings.minRequest) {
+          return false;
+        }
+      }
       // The cap is read here, just before the write.
       const cap = this.config.maxVolume;
       this.logger.info(`${deviceName(device)}: volume ${volume} above the cap, lowered to ${cap}`);

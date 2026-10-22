@@ -10,6 +10,13 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+### Fixed
+
+- The lowering of a volume above the cap, when it waited in the command
+  queue, reads the identity of the speaker again just before writing: a
+  speaker that took the address meanwhile (DHCP) is never written, and an
+  unreadable identity writes nothing (the next check reads again).
+
 ## [0.1.1] - 2026-10-21
 
 ### Added
