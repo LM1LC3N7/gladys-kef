@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-22
+
 ### Fixed
 
 - The lowering of a volume above the cap, when it waited in the command
@@ -84,5 +86,6 @@ the notes of the version's GitHub Release.
   used are removed from /data; the name and model of a speaker without a name
   are read again at most every 10 minutes.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-kef/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/LM1LC3N7/gladys-kef/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/LM1LC3N7/gladys-kef/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LM1LC3N7/gladys-kef/releases/tag/v0.1.1

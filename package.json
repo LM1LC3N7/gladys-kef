@@ -1,6 +1,6 @@
 {
   "name": "gladys-kef",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Gladys Assistant external integration for KEF wireless speakers (LS50 Wireless II, LSX II, LS60): power, volume, mute, source, playback and title, over their local HTTP API. Unofficial, not affiliated with KEF.",
   "type": "module",
